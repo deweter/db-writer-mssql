@@ -102,6 +102,13 @@ class MSSQL extends Writer implements WriterInterface
             $this->escape($table['dbName']),
             implode(',', $sqlColumns)
         ));
+        
+        $this->execQuery(sprintf(
+            // add possible conditional check for edition & version via T-SQL
+            'CREATE CLUSTERED COLUMNSTORE INDEX CCI_%s ON %s',
+            $this->escape($table['dbName']),
+            $this->escape($table['dbName'])
+        ));
     }
 
     public function write(CsvFile $csv, array $table): void
@@ -141,19 +148,33 @@ class MSSQL extends Writer implements WriterInterface
             $columns[] = $column;
         }
 
+        /* initialize the table */
         $query = sprintf(
-            'SELECT %s INTO %s FROM %s',
+            'SELECT TOP 0 %s INTO %s FROM %s',
             implode(',', $columns),
             $this->escape($dstTableName),
             $this->escape($stagingTable['dbName'])
-        );
-        // if query fails drop the dst table
-        $retryQuery = sprintf(
-            "IF OBJECT_ID('%s', 'U') IS NOT NULL DROP TABLE %s",
-            $dstTableName,
+        );                
+        $this->execQuery($query);
+        $this->logger->info('Destination table created');
+
+        /* Create CCI on the table */
+        $query = sprintf(
+            'CREATE CLUSTERED COLUMNSTORE INDEX CCI_%s ON %s;',            
+            $this->escape($dstTableName),
             $this->escape($dstTableName)
         );
-        $this->execQuery($query, $retryQuery);
+        $this->execQuery($query);
+        $this->logger->info('Clustered columnstore on destination table created');
+
+        $query = sprintf(
+            'INSERT %s WITH (TABLOCK) (%s) SELECT %s FROM %s;',
+            $this->escape($dstTableName),
+            implode(',', $columns),
+            implode(',', $columns),            
+            $this->escape($stagingTable['dbName'])
+        );
+        $this->execQuery($query);
         $this->logger->info('BCP data moved to destination table');
 
         // drop staging
@@ -232,19 +253,25 @@ class MSSQL extends Writer implements WriterInterface
                 implode('_', $table['primaryKey'])
             ));
             $pkSql = PHP_EOL . sprintf(
-                'CONSTRAINT [%s] PRIMARY KEY CLUSTERED (%s)',
+                'CONSTRAINT [%s] PRIMARY KEY NONCLUSTERED (%s)',
                 $constraintId,
                 implode(',', $table['primaryKey'])
             ) . PHP_EOL;
-        }
+        }        
 
         $sql = sprintf(
             'CREATE TABLE %s (%s %s)',
             $this->escape($table['dbName']),
             implode(',', $columnsSql),
             $pkSql
-        );
+        );        
+        $this->execQuery($sql);
 
+        $sql = sprintf(
+            'CREATE CLUSTERED COLUMNSTORE INDEX CCI_%s ON %s;',
+            $this->escape($table['dbName']),
+            $this->escape($table['dbName'])
+        );
         $this->execQuery($sql);
     }
 
@@ -293,15 +320,15 @@ class MSSQL extends Writer implements WriterInterface
 
             $this->execQuery($query);
             $this->logger->info('Data updated');
-
+  
             // delete updated from temp table
             $query = "DELETE a FROM {$sourceTable} a
                 INNER JOIN {$targetTable} b ON {$joinClause}
             ";
-
-            $this->execQuery($query);
+            
+            $this->execQuery($query);            
         }
-
+        
         // insert new data
         $columnsClause = implode(',', $columns);
         $query = "INSERT INTO {$targetTable} ({$columnsClause}) SELECT * FROM {$sourceTable}";
