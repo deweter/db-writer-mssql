@@ -257,14 +257,14 @@ class MSSQL extends Writer implements WriterInterface
                 $constraintId,
                 implode(',', $table['primaryKey'])
             ) . PHP_EOL;
-        }        
-
+        }
+        
         $sql = sprintf(
             'CREATE TABLE %s (%s %s)',
             $this->escape($table['dbName']),
             implode(',', $columnsSql),
             $pkSql
-        );        
+        );      
         $this->execQuery($sql);
 
         $sql = sprintf(
@@ -320,21 +320,21 @@ class MSSQL extends Writer implements WriterInterface
 
             $this->execQuery($query);
             $this->logger->info('Data updated');
-  
-            // delete updated from temp table
-            $query = "DELETE a FROM {$sourceTable} a
-                INNER JOIN {$targetTable} b ON {$joinClause}
-            ";
             
-            $this->execQuery($query);            
+            $columnsClause = implode(',', $columns);
+            $query = "INSERT INTO {$targetTable} WITH (TABLOCK)
+                SELECT {$columnsClause} FROM {$sourceTable} a 
+                WHERE NOT EXISTS (SELECT * FROM {$targetTable} b WHERE ({$joinClause}))";
+            $this->execQuery($query);
+            $this->logger->info('New data inserted');
         }
-        
-        // insert new data
-        $columnsClause = implode(',', $columns);
-        $query = "INSERT INTO {$targetTable} ({$columnsClause}) SELECT * FROM {$sourceTable}";
-        $this->execQuery($query);
-        $this->logger->info('New data inserted');
-
+        else {
+            // insert new data
+            $columnsClause = implode(',', $columns);
+            $query = "INSERT INTO {$targetTable} ({$columnsClause}) SELECT * FROM {$sourceTable}";
+            $this->execQuery($query);
+            $this->logger->info('New data inserted');
+        }
         $endTime = microtime(true);
         $this->logger->info(sprintf('Finished UPSERT after %s seconds', intval($endTime - $startTime)));
 
